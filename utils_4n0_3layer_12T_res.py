@@ -6,7 +6,7 @@ import mxnet as mx
 import pandas as pd
 
 
-def construct_model(config):
+def construct_model(config,new=0):
     from models.stsgcn_4n_res import stsgcn
 
     module_type = config['module_type']
@@ -25,8 +25,11 @@ def construct_model(config):
     if id_filename is not None:
         if not os.path.exists(id_filename):
             id_filename = None
-
-    adj = get_adjacency_matrix(adj_filename, num_of_vertices,
+    
+    if new == 1:
+        adj = get_adjacency_matrix_new(adj_filename)
+    else:
+        adj = get_adjacency_matrix(adj_filename, num_of_vertices,
                                id_filename=id_filename)
     #adj_mx = construct_adj(adj, 3)
     adj_dtw = np.array(pd.read_csv(config['adj_dtw_filename'], header=None))
@@ -37,11 +40,12 @@ def construct_model(config):
 
     data = mx.sym.var("data")
     label = mx.sym.var("label")
+    #delete .tolist()
     adj = mx.sym.Variable('adj', shape=adj_mx.shape,
-                          init=mx.init.Constant(value=adj_mx.tolist()))
+                          init=mx.init.Constant(value=adj_mx))
     adj = mx.sym.BlockGrad(adj)
     mask_init_value = mx.init.Constant(value=(adj_mx != 0)
-                                       .astype('float32').tolist())
+                                       .astype('float32'))
 
     filters = config['filters']
     first_layer_embedding_size = config['first_layer_embedding_size']
@@ -69,6 +73,17 @@ def construct_model(config):
     )[1][1] == (batch_size, num_for_predict, num_of_vertices)
     return net
 
+def get_adjacency_matrix_new(distance_df_filename):
+    A = np.load(distance_df_filename,allow_pickle=True)
+    for i in range(A.shape[0]):
+        A[i,i] = 0
+        for j in range(i+1,A.shape[1]):
+            try:
+                A[i,j] = 1/A[i,j]
+            except:
+                A[i,j] = 0
+            A[j,i] = A[i,j]
+    return A
 
 def get_adjacency_matrix(distance_df_filename, num_of_vertices,
                          type_='connectivity', id_filename=None):
@@ -223,14 +238,17 @@ def generate_from_train_val_test(data, transformer):
         yield (x - mean) / std, y
 
 
-def generate_from_data(data, length, transformer):
+def generate_from_data(data, length, transformer,isnew):
     mean = None
     std = None
     train_line, val_line = int(length * 0.6), int(length * 0.8)
     for line1, line2 in ((0, train_line),
                          (train_line, val_line),
                          (val_line, length)):
-        x, y = generate_seq(data['data'][line1: line2], 12, 12)
+        if isnew ==1:
+            x, y = generate_seq(data[line1: line2], 12, 12)
+        else:
+            x, y = generate_seq(data['data'][line1: line2], 12, 12)
         if transformer:
             x = transformer(x)
             y = transformer(y)
@@ -241,21 +259,26 @@ def generate_from_data(data, length, transformer):
         yield (x - mean) / std, y
 
 
-def generate_data(graph_signal_matrix_filename, transformer=None):
+def generate_data(graph_signal_matrix_filename, transformer=None,isnew=0):
     '''
     shape is (num_of_samples, 12, num_of_vertices, 1)
     '''
     data = np.load(graph_signal_matrix_filename)
-    keys = data.keys()
-    if 'train' in keys and 'val' in keys and 'test' in keys:
-        for i in generate_from_train_val_test(data, transformer):
+    if isnew ==1:
+        length = data.shape[0]
+        for i in generate_from_data(data, length, transformer,isnew):
             yield i
-    elif 'data' in keys:
-        length = data['data'].shape[0]
-        for i in generate_from_data(data, length, transformer):
-            yield i
-    else:
-        raise KeyError("neither data nor train, val, test is in the data")
+    else: 
+        keys = data.keys()
+        if 'train' in keys and 'val' in keys and 'test' in keys:
+            for i in generate_from_train_val_test(data, transformer):
+                yield i
+        elif 'data' in keys:
+            length = data['data'].shape[0]
+            for i in generate_from_data(data, length, transformer,isnew):
+                yield i
+        else:
+            raise KeyError("neither data nor train, val, test is in the data")
 
 
 def generate_seq(data, train_length, pred_length):
